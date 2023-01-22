@@ -10,6 +10,7 @@ from logging import getLogger
 from django.db import models
 from pulpcore.plugin.models import BaseModel, EncryptedTextField
 
+
 class Server(BaseModel):
     name = models.TextField(db_index=True, unique=True)
 

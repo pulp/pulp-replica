@@ -18,12 +18,14 @@ class ServerSerializer(ModelSerializer, HiddenFieldsMixin):
     Serializer for a Server.
     """
 
-    pulp_href = IdentityField(view_name='servers-detail')
+    pulp_href = IdentityField(view_name="servers-detail")
     name = serializers.CharField(
         help_text=_("A unique name for this Pulp server."),
         validators=[UniqueValidator(queryset=models.Server.objects.all())],
     )
-    base_url = serializers.CharField(help_text="The transport, hostname, and an optional port of the Pulp server. e.g. https//example.com")
+    base_url = serializers.CharField(
+        help_text="The transport, hostname, and an optional port of the Pulp server. e.g. https//example.com"
+    )
     api_root = serializers.CharField(help_text="The API root. Defaults to '/pulp/'.")
     ca_cert = serializers.CharField(
         help_text="A PEM encoded CA certificate used to validate the server "
