@@ -4,23 +4,6 @@ Check `Plugin Writer's Guide`_ for more details.
 .. _Plugin Writer's Guide:
     https://docs.pulpproject.org/pulpcore/plugins/plugin-writer/index.html
 """
-
-# from django.db import transaction
-# from drf_spectacular.utils import extend_schema
-# from rest_framework import status
-# from rest_framework.decorators import action
-# from rest_framework.response import Response
-#
-# from pulpcore.plugin.viewsets import RemoteFilter
-# from pulpcore.plugin import viewsets as core
-# from pulpcore.plugin.actions import ModifyRepositoryActionMixin
-# from pulpcore.plugin.serializers import (
-#     AsyncOperationResponseSerializer,
-#     RepositorySyncURLSerializer,
-# )
-# from pulpcore.plugin.tasking import dispatch
-# from pulpcore.plugin.models import ContentArtifact
-
 from . import models, serializers, tasks
 
 from drf_spectacular.utils import extend_schema
