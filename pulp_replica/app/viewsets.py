@@ -42,7 +42,7 @@ class ServerViewSet(
 
         task = dispatch(
             tasks.replicate_distributions,
-            exclusive_resources=["/pulp/api/v3/pulpservers/"],
+            exclusive_resources=["/pulp/api/v3/servers/"],
             kwargs={"server_pk": pk},
             task_group=task_group,
         )
