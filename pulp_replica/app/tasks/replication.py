@@ -7,8 +7,19 @@ from pulpcore.cli.file.context import (
     PulpFileRepositoryContext,
 )
 
+from pulpcore.cli.rpm.context import (
+    PulpRpmDistributionContext,
+    PulpRpmPublicationContext,
+    PulpRpmRemoteContext,
+    PulpRpmRepositoryContext,
+)
+
+
 from pulp_file.app.models import FileDistribution, FileRemote, FileRepository
 from pulp_file.app.tasks import synchronize as file_synchronize
+
+from pulp_rpm.app.models import RpmDistribution, RpmRemote, RpmRepository
+from pulp_rpm.app.tasks import synchronize as rpm_synchronize
 
 from pulpcore.plugin.models import Task, TaskGroup
 from pulpcore.plugin.tasking import dispatch  # , general_create, general_update
@@ -40,50 +51,53 @@ class Replicator:
     def get_upstream_distributions(self):
         return self.distribution_ctx(self.pulp_ctx).list(1000, 0, {})
 
-    def get_url(self, upstream_distribution):
+    def url(self, upstream_distribution):
         return upstream_distribution["base_url"]
 
-    def get_or_create_remote(self, upstream_distribution):
-        url = self.get_url(upstream_distribution)
-        if not url:
+    def create_or_update_remote(self, upstream_distribution):
+
+        if not upstream_distribution["repository"] and not upstream_distribution["publication"]:
+
             return None
+        url = self.url(upstream_distribution)
         # Check if there is a remote pointing to this distribution
         try:
-            remote = FileRemote.objects.get(name=upstream_distribution["name"])
+            remote = self.remote_model.objects.get(name=upstream_distribution["name"])
             if remote.url != url:
                 remote.url = url
                 remote.save()
-        except FileRemote.DoesNotExist:
+        except self.remote_model.DoesNotExist:
             # Create the remote
-            remote = FileRemote(name=upstream_distribution["name"], url=url)
+            remote = self.remote_model(name=upstream_distribution["name"], url=url)
             remote.save()
 
         return remote
 
-    def get_repository_extra_fields(self, remote):
+    def repository_extra_fields(self, remote):
         return {}
 
-    def get_or_create_repository(self, remote):
+    def create_or_update_repository(self, remote):
         try:
             repository = self.repository_model.objects.get(name=remote.name)
             # Update the existing repository with latest values
             repository.remote = remote
-            for field_name, value in self.get_repository_extra_fields(remote).items():
+            for field_name, value in self.repository_extra_fields(remote).items():
                 setattr(repository, field_name, value)
             repository.save()
-        except self.remote_model.DoesNotExist:
+        except self.repository_model.DoesNotExist:
             repository = self.repository_model(
-                name=remote.name, remote=remote, **self.get_repository_extra_fields(remote)
+                name=remote.name, remote=remote, **self.repository_extra_fields(remote)
             )
             repository.save()
         return repository
 
-    def get_or_create_distribution(self, repository, upstream_distribution):
+    def create_or_update_distribution(self, repository, upstream_distribution):
         try:
             distro = self.distribution_model.objects.get(name=upstream_distribution["name"])
             # Check that the distribution has the right repository associated
             if (
-                distro.repository.pk != repository.pk
+                not distro.repository
+                or distro.repository.pk != repository.pk
                 or distro.base_path == upstream_distribution["base_path"]
             ):
                 # Update the distribution
@@ -116,17 +130,17 @@ class Replicator:
                 },
             )
 
+    def sync_params(self, repository):
+        """This method returns a dict that will be passed as kwargs to the sync task."""
+        raise NotImplementedError("Each replicator must supply its own sync params.")
+
     def sync(self, repository):
         dispatch(
             self.sync_task,
             task_group=self.task_group,
             shared_resources=[repository.remote],
             exclusive_resources=[repository],
-            kwargs={
-                "remote_pk": str(repository.remote.pk),
-                "repository_pk": str(repository.pk),
-                "mirror": True,
-            },
+            kwargs=self.sync_params(repository),
         )
 
 
@@ -145,7 +159,7 @@ class FileReplicator(Replicator):
         self.task_group = task_group
         self.sync_task = file_synchronize
 
-    def get_url(self, upstream_distribution):
+    def url(self, upstream_distribution):
         # Check if a distribution is repository or publication based
         if upstream_distribution["repository"]:
             manifest = self.repository_ctx(
@@ -159,8 +173,44 @@ class FileReplicator(Replicator):
 
         return f"{upstream_distribution['base_url']}{manifest}"
 
-    def get_repository_extra_fields(self, remote):
+    def repository_extra_fields(self, remote):
         return dict(manifest=remote.url.split("/")[-1], autopublish=True)
+
+    def sync_params(self, repository):
+        return dict(
+            remote_pk=str(repository.remote.pk),
+            repository_pk=str(repository.pk),
+            mirror=True,
+        )
+
+
+class RpmReplicator(Replicator):
+    def __init__(self, pulp_ctx, task_group):
+        self.pulp_ctx = pulp_ctx
+        self.remote_ctx = PulpRpmRemoteContext
+        self.repository_ctx = PulpRpmRepositoryContext
+        self.distribution_ctx = PulpRpmDistributionContext
+        self.publication_ctx = PulpRpmPublicationContext
+        self.app_label = "rpm"
+        self.remote_model = RpmRemote
+        self.repository_model = RpmRepository
+        self.distribution_model = RpmDistribution
+        self.serializer_name = "RpmDistributionSerializer"
+        self.task_group = task_group
+        self.sync_task = rpm_synchronize
+
+    def repository_extra_fields(self, remote):
+        # TODO: determine which RPM repository fields should also be included
+        return dict(autopublish=True)
+
+    def sync_params(self, repository):
+        return dict(
+            remote_pk=repository.remote.pk,
+            repository_pk=repository.pk,
+            sync_policy="mirror_content_only",
+            skip_types=[],
+            optimize=True,
+        )
 
 
 def replicate_distributions(server_pk):
@@ -179,20 +229,29 @@ def replicate_distributions(server_pk):
         timeout=0,
     )
     task_group = TaskGroup.current()
-    supported_replicators = [FileReplicator(ctx, task_group)]
+    supported_replicators = [FileReplicator(ctx, task_group), RpmReplicator(ctx, task_group)]
 
     for replicator in supported_replicators:
         distros = replicator.get_upstream_distributions()
 
         for distro in distros:
             # Create remote
-            remote = replicator.get_or_create_remote(upstream_distribution=distro)
-
+            remote = replicator.create_or_update_remote(upstream_distribution=distro)
+            if not remote:
+                # The upstream distribution is not serving any content, cleanup an existing local distribution
+                try:
+                    local_distro = replicator.distribution_model.objects.get(name=distro["name"])
+                    local_distro.repository = None
+                    local_distro.publication = None
+                    local_distro.save()
+                    continue
+                except replicator.distribution_model.DoesNotExist:
+                    continue
             # Check if there is already a repository
-            repository = replicator.get_or_create_repository(remote=remote)
+            repository = replicator.create_or_update_repository(remote=remote)
 
             # Dispatch a sync task
             replicator.sync(repository)
 
             # Get or create a distribution
-            replicator.get_or_create_distribution(repository, distro)
+            replicator.create_or_update_distribution(repository, distro)
