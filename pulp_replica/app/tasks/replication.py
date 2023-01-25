@@ -207,7 +207,7 @@ class RpmReplicator(Replicator):
         return dict(
             remote_pk=repository.remote.pk,
             repository_pk=repository.pk,
-            sync_policy="mirror_content_only",
+            sync_policy="mirror_complete",
             skip_types=[],
             optimize=True,
         )
